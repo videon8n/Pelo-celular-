@@ -85,23 +85,38 @@
             <span class="pax-counter" id="pax-counter">0 / 4</span>
           </header>
           <div class="card-body">
-            <p class="help">Toque no mapa para marcar <b>EMBARQUE</b> depois <b>DESEMBARQUE</b> de cada passageiro.</p>
+            <p class="help">Digite o endereço de <b>EMBARQUE</b> e <b>DESEMBARQUE</b> de cada passageiro.</p>
 
-            <div class="pickup-mode" id="pickup-mode">
-              <div class="pickup-step" data-step="pickup">
-                <span class="step-pill pill-pickup">1</span>
-                <span>Toque o EMBARQUE no mapa</span>
+            <!-- Formulário de novo passageiro -->
+            <div class="passenger-form" id="passenger-form">
+              <div class="addr-field">
+                <label class="field-label"><span class="step-pill pill-pickup">A</span> Embarque</label>
+                <div class="addr-input-wrap">
+                  <input type="text" id="input-pickup" class="input-lg addr-input"
+                    placeholder="Ex: Av. Paulista 1000, São Paulo"
+                    autocomplete="off" spellcheck="false" />
+                  <div class="addr-suggestions" id="sugg-pickup"></div>
+                </div>
               </div>
-              <div class="pickup-step" data-step="dropoff">
-                <span class="step-pill pill-dropoff">2</span>
-                <span>Toque o DESEMBARQUE no mapa</span>
+
+              <div class="addr-field">
+                <label class="field-label"><span class="step-pill pill-dropoff">B</span> Desembarque</label>
+                <div class="addr-input-wrap">
+                  <input type="text" id="input-dropoff" class="input-lg addr-input"
+                    placeholder="Ex: Rua Augusta 500, São Paulo"
+                    autocomplete="off" spellcheck="false" />
+                  <div class="addr-suggestions" id="sugg-dropoff"></div>
+                </div>
               </div>
+
+              <button id="btn-save-passenger" class="btn btn-primary btn-big" disabled>
+                ＋ ADICIONAR PASSAGEIRO
+              </button>
             </div>
 
             <ul class="passenger-list" id="passenger-list"></ul>
 
             <div class="row-actions">
-              <button id="btn-add-passenger" class="btn btn-secondary">＋ Novo passageiro</button>
               <button id="btn-clear" class="btn btn-ghost">Limpar tudo</button>
             </div>
           </div>

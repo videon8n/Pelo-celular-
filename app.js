@@ -7,8 +7,10 @@ const state = {
   map: null,
   driverLocation: { lng: -46.6333, lat: -23.5505 }, // São Paulo (padrão)
   passengers: [],
-  currentStep: 'pickup', // pickup | dropoff
-  currentDraftPassenger: null,
+  draft: {              // rascunho do passageiro sendo criado
+    pickup: null,       // { lng, lat, label }
+    dropoff: null,
+  },
   vehicle: null,
   fuel: 'gasolina',
   fuelPrice: 6.19,
@@ -41,8 +43,26 @@ function initVehicleSelect() {
   });
   state.vehicle = VEHICLES[0];
 
+  // Restaura preferências salvas
+  const savedFuel = localStorage.getItem('taxirota.fuel');
+  const savedPrice = parseFloat(localStorage.getItem('taxirota.fuelPrice'));
+  const savedCar = localStorage.getItem('taxirota.vehicle');
+  if (savedCar) {
+    const v = VEHICLES.find(x => x.id === savedCar);
+    if (v) { state.vehicle = v; sel.value = savedCar; }
+  }
+  if (savedFuel && ['gasolina','etanol','diesel'].includes(savedFuel)) {
+    state.fuel = savedFuel;
+    document.getElementById('fuel-select').value = savedFuel;
+  }
+  if (!isNaN(savedPrice) && savedPrice > 0) {
+    state.fuelPrice = savedPrice;
+    document.getElementById('fuel-price').value = savedPrice.toFixed(2);
+  }
+
   sel.addEventListener('change', e => {
     state.vehicle = VEHICLES.find(v => v.id === e.target.value);
+    localStorage.setItem('taxirota.vehicle', state.vehicle.id);
     syncFuelOptions();
     updateVehicleInfo();
   });
@@ -51,11 +71,14 @@ function initVehicleSelect() {
     state.fuel = e.target.value;
     state.fuelPrice = FUEL_REFERENCE_PRICE[state.fuel];
     document.getElementById('fuel-price').value = state.fuelPrice.toFixed(2);
+    localStorage.setItem('taxirota.fuel', state.fuel);
+    localStorage.setItem('taxirota.fuelPrice', state.fuelPrice);
     updateVehicleInfo();
   });
 
   document.getElementById('fuel-price').addEventListener('input', e => {
     state.fuelPrice = parseFloat(e.target.value) || 0;
+    localStorage.setItem('taxirota.fuelPrice', state.fuelPrice);
     updateVehicleInfo();
   });
 
@@ -141,9 +164,6 @@ function initMap() {
     addDriverMarker();
   });
 
-  // Clique no mapa para adicionar paradas
-  state.map.on('click', handleMapClick);
-
   // cursor
   state.map.on('mouseenter', 'passenger-markers', () => state.map.getCanvas().style.cursor = 'pointer');
   state.map.on('mouseleave', 'passenger-markers', () => state.map.getCanvas().style.cursor = '');
@@ -189,7 +209,7 @@ function addDriverMarker() {
 
 // =============== UI Bindings ===============
 function bindUI() {
-  document.getElementById('btn-add-passenger').addEventListener('click', startNewPassenger);
+  document.getElementById('btn-save-passenger').addEventListener('click', savePassengerFromForm);
   document.getElementById('btn-clear').addEventListener('click', clearAll);
   document.getElementById('btn-calculate').addEventListener('click', calculateRoute);
   document.getElementById('btn-accept').addEventListener('click', acceptAndStartNavigation);
@@ -201,76 +221,199 @@ function bindUI() {
   // marca botão 3D como ativo
   document.getElementById('btn-3d').classList.add('active');
 
-  // Pronto para começar: prepara primeiro passageiro
-  startNewPassenger();
-}
+  // Autocomplete de endereços
+  bindAddressAutocomplete('input-pickup', 'sugg-pickup', 'pickup');
+  bindAddressAutocomplete('input-dropoff', 'sugg-dropoff', 'dropoff');
 
-function startNewPassenger() {
-  if (state.passengers.length >= 4) {
-    alert('Máximo de 4 passageiros por corrida.');
-    return;
-  }
-  const id = 'p' + Date.now();
-  state.currentDraftPassenger = {
-    id,
-    name: 'Passageiro ' + (state.passengers.length + 1),
-    color: PAX_COLORS[state.passengers.length],
-    pickup: null,
-    dropoff: null,
-  };
-  state.currentStep = 'pickup';
-  updatePickupModeUI();
-  setStatus('Toque no mapa para marcar o EMBARQUE de ' + state.currentDraftPassenger.name, 'nav');
-}
-
-function updatePickupModeUI() {
-  const container = document.getElementById('pickup-mode');
-  container.querySelectorAll('.pickup-step').forEach(el => {
-    el.classList.toggle('active', el.dataset.step === state.currentStep);
-  });
-  container.style.display = state.currentDraftPassenger ? 'flex' : 'none';
+  // Tenta usar GPS logo na abertura
+  tryAutoLocate();
 }
 
 function clearAll() {
   if (!confirm('Limpar todos os passageiros e a rota?')) return;
   state.passengers = [];
-  state.currentDraftPassenger = null;
+  state.draft = { pickup: null, dropoff: null };
   state.route = null;
   state.osrmGeometry = null;
   state.osrmSteps = [];
+  document.getElementById('input-pickup').value = '';
+  document.getElementById('input-dropoff').value = '';
+  document.getElementById('input-pickup').classList.remove('valid');
+  document.getElementById('input-dropoff').classList.remove('valid');
   renderPassengers();
   clearRouteOnMap();
   clearPassengerMarkers();
   document.getElementById('route-summary').classList.add('hidden');
   document.getElementById('btn-calculate').disabled = true;
+  document.getElementById('btn-save-passenger').disabled = true;
   setStatus('Pronto para embarcar');
-  startNewPassenger();
 }
 
-// =============== Cliques no mapa ===============
-function handleMapClick(e) {
-  if (state.navigating) return;
-  if (!state.currentDraftPassenger) return;
+// =============== Busca de endereços (Nominatim) ===============
+function bindAddressAutocomplete(inputId, suggId, kind) {
+  const input = document.getElementById(inputId);
+  const sugg  = document.getElementById(suggId);
+  let debounceT = null;
+  let lastQuery = '';
 
-  const coord = { lng: e.lngLat.lng, lat: e.lngLat.lat };
-  const draft = state.currentDraftPassenger;
+  input.addEventListener('input', () => {
+    const q = input.value.trim();
+    input.classList.remove('valid');
+    state.draft[kind] = null;
+    updateSaveButton();
 
-  if (state.currentStep === 'pickup') {
-    draft.pickup = coord;
-    state.currentStep = 'dropoff';
-    updatePickupModeUI();
-    setStatus('Agora toque o DESEMBARQUE de ' + draft.name, 'nav');
-  } else {
-    draft.dropoff = coord;
-    state.passengers.push(draft);
-    state.currentDraftPassenger = null;
-    updatePickupModeUI();
-    setStatus(draft.name + ' adicionado. ' + (state.passengers.length < 4 ? 'Toque em “Novo passageiro” para adicionar outro.' : 'Capacidade máxima atingida.'));
-    document.getElementById('btn-calculate').disabled = state.passengers.length === 0;
+    clearTimeout(debounceT);
+    if (q.length < 3) { sugg.classList.remove('show'); sugg.innerHTML = ''; return; }
+    if (q === lastQuery) return;
+    lastQuery = q;
+
+    input.classList.add('loading');
+    debounceT = setTimeout(async () => {
+      try {
+        const results = await geocodeAddress(q);
+        input.classList.remove('loading');
+        renderSuggestions(sugg, results, result => {
+          input.value = result.displayName;
+          input.classList.add('valid');
+          sugg.classList.remove('show');
+          state.draft[kind] = {
+            lng: result.lng, lat: result.lat, label: result.displayName
+          };
+          updateSaveButton();
+          // centraliza mapa no endereço
+          state.map.flyTo({ center: [result.lng, result.lat], zoom: 15, pitch: 55, duration: 800 });
+        });
+      } catch (err) {
+        input.classList.remove('loading');
+        console.warn('Geocode falhou:', err);
+        sugg.innerHTML = '<div class="addr-suggestion-item empty">Não foi possível buscar agora.</div>';
+        sugg.classList.add('show');
+      }
+    }, 350);
+  });
+
+  // fecha sugestões ao clicar fora
+  document.addEventListener('click', e => {
+    if (!sugg.contains(e.target) && e.target !== input) {
+      sugg.classList.remove('show');
+    }
+  });
+  input.addEventListener('focus', () => {
+    if (sugg.innerHTML) sugg.classList.add('show');
+  });
+}
+
+async function geocodeAddress(query) {
+  // Viés para o Brasil + proximidade do taxista
+  const v = state.driverLocation;
+  const params = new URLSearchParams({
+    q: query,
+    format: 'json',
+    addressdetails: '1',
+    limit: '6',
+    countrycodes: 'br',
+    'accept-language': 'pt-BR',
+    viewbox: `${v.lng - 0.5},${v.lat + 0.5},${v.lng + 0.5},${v.lat - 0.5}`,
+    bounded: '0',
+  });
+  const url = `https://nominatim.openstreetmap.org/search?${params}`;
+  const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const data = await res.json();
+  return data.map(r => ({
+    lng: parseFloat(r.lon),
+    lat: parseFloat(r.lat),
+    displayName: formatDisplay(r),
+    address: r.address || {},
+  }));
+}
+
+function formatDisplay(r) {
+  const a = r.address || {};
+  const road = [a.road, a.house_number].filter(Boolean).join(', ');
+  const neigh = a.suburb || a.neighbourhood || a.city_district || '';
+  const city = a.city || a.town || a.village || a.municipality || '';
+  const uf = a.state_code || a.state || '';
+  const parts = [road, neigh, city, uf].filter(Boolean);
+  return parts.join(' - ') || r.display_name;
+}
+
+function renderSuggestions(container, results, onPick) {
+  container.innerHTML = '';
+  if (results.length === 0) {
+    container.innerHTML = '<div class="addr-suggestion-item empty">Nenhum endereço encontrado.</div>';
+    container.classList.add('show');
+    return;
   }
+  results.forEach(r => {
+    const div = document.createElement('div');
+    div.className = 'addr-suggestion-item';
+    const parts = r.displayName.split(' - ');
+    div.innerHTML = `<span class="sug-main">${parts[0]}</span>
+      <span class="sug-sub">${parts.slice(1).join(' · ')}</span>`;
+    div.addEventListener('click', () => onPick(r));
+    container.appendChild(div);
+  });
+  container.classList.add('show');
+}
+
+function updateSaveButton() {
+  const can = state.draft.pickup && state.draft.dropoff && state.passengers.length < 4;
+  document.getElementById('btn-save-passenger').disabled = !can;
+}
+
+function savePassengerFromForm() {
+  if (state.passengers.length >= 4) {
+    alert('Máximo de 4 passageiros por corrida.');
+    return;
+  }
+  if (!state.draft.pickup || !state.draft.dropoff) return;
+
+  const id = 'p' + Date.now();
+  const passenger = {
+    id,
+    name: 'Passageiro ' + (state.passengers.length + 1),
+    color: PAX_COLORS[state.passengers.length],
+    pickup: state.draft.pickup,
+    dropoff: state.draft.dropoff,
+  };
+  state.passengers.push(passenger);
+
+  // limpa formulário
+  state.draft = { pickup: null, dropoff: null };
+  document.getElementById('input-pickup').value = '';
+  document.getElementById('input-dropoff').value = '';
+  document.getElementById('input-pickup').classList.remove('valid');
+  document.getElementById('input-dropoff').classList.remove('valid');
+  updateSaveButton();
 
   renderPassengers();
   renderPassengerMarkers();
+  document.getElementById('btn-calculate').disabled = false;
+
+  const remaining = 4 - state.passengers.length;
+  setStatus(passenger.name + ' adicionado. ' + (remaining > 0 ? `Pode adicionar mais ${remaining}.` : 'Capacidade máxima.'));
+
+  // fit bounds
+  const bounds = new maplibregl.LngLatBounds();
+  state.passengers.forEach(p => {
+    bounds.extend([p.pickup.lng, p.pickup.lat]);
+    bounds.extend([p.dropoff.lng, p.dropoff.lat]);
+  });
+  bounds.extend([state.driverLocation.lng, state.driverLocation.lat]);
+  state.map.fitBounds(bounds, { padding: 80, pitch: 55, duration: 900 });
+}
+
+function tryAutoLocate() {
+  if (!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(pos => {
+    state.driverLocation = { lng: pos.coords.longitude, lat: pos.coords.latitude };
+    if (driverMarker) driverMarker.setLngLat([state.driverLocation.lng, state.driverLocation.lat]);
+    state.map.flyTo({
+      center: [state.driverLocation.lng, state.driverLocation.lat],
+      zoom: 14, pitch: 55, duration: 1200,
+    });
+  }, () => {}, { enableHighAccuracy: false, timeout: 6000, maximumAge: 300000 });
 }
 
 // =============== Renderização de passageiros ===============
@@ -280,11 +423,14 @@ function renderPassengers() {
   state.passengers.forEach((p, i) => {
     const li = document.createElement('li');
     li.className = 'passenger-item';
+    const pickupLabel = p.pickup.label || fmtCoord(p.pickup);
+    const dropoffLabel = p.dropoff.label || fmtCoord(p.dropoff);
     li.innerHTML = `
       <span class="pax-avatar" style="background:${p.color}">${i + 1}</span>
       <div class="pax-details">
         <div class="pax-name">${p.name}</div>
-        <div class="pax-route">${fmtCoord(p.pickup)} → ${fmtCoord(p.dropoff)}</div>
+        <div class="pax-route"><span class="from">A</span> ${escapeHtml(pickupLabel)}</div>
+        <div class="pax-route"><span class="to">B</span> ${escapeHtml(dropoffLabel)}</div>
       </div>
       <button class="pax-remove" data-id="${p.id}" title="Remover">✕</button>
     `;
@@ -304,6 +450,11 @@ function renderPassengers() {
 function fmtCoord(c) {
   if (!c) return '—';
   return c.lat.toFixed(4) + ', ' + c.lng.toFixed(4);
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[c]);
 }
 
 // =============== Marcadores de passageiros ===============
