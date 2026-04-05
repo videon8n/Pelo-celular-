@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>TáxiRota — Central do Taxista</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Cabeçalho -->
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">
+          <svg viewBox="0 0 48 48" width="36" height="36" aria-hidden="true">
+            <rect x="6" y="20" width="36" height="16" rx="3" fill="#0b2545"/>
+            <rect x="10" y="12" width="28" height="10" rx="2" fill="#13315c"/>
+            <circle cx="15" cy="37" r="4" fill="#0b2545" stroke="#ffffff" stroke-width="2"/>
+            <circle cx="33" cy="37" r="4" fill="#0b2545" stroke="#ffffff" stroke-width="2"/>
+            <rect x="12" y="8" width="24" height="5" rx="1" fill="#f4c430"/>
+            <text x="24" y="12.5" text-anchor="middle" font-size="4" font-weight="900" fill="#0b2545" font-family="Arial">TAXI</text>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>TáxiRota</h1>
+          <span>Central do Taxista</span>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <div class="status-pill" id="status-pill">
+          <span class="dot"></span>
+          <span id="status-text">Pronto para embarcar</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Corpo principal -->
+    <main class="main-grid">
+      <!-- Painel esquerdo: Configuração da rota -->
+      <aside class="side-panel" id="side-panel">
+        <!-- Passo 1: Veículo -->
+        <section class="card">
+          <header class="card-head">
+            <span class="num">1</span>
+            <h2>Seu carro</h2>
+          </header>
+          <div class="card-body">
+            <label class="field-label">Modelo</label>
+            <select id="vehicle-select" class="select-lg"></select>
+
+            <div class="grid-2">
+              <div>
+                <label class="field-label">Combustível</label>
+                <select id="fuel-select" class="select-lg">
+                  <option value="gasolina">Gasolina</option>
+                  <option value="etanol">Etanol</option>
+                  <option value="diesel">Diesel</option>
+                </select>
+              </div>
+              <div>
+                <label class="field-label">Preço (R$/L)</label>
+                <input type="number" id="fuel-price" class="input-lg" step="0.01" min="0" value="6.19" />
+              </div>
+            </div>
+
+            <div class="info-row">
+              <div class="info-item">
+                <span class="info-label">Consumo</span>
+                <strong id="car-consumption">—</strong>
+              </div>
+              <div class="info-item">
+                <span class="info-label">Custo por km</span>
+                <strong id="car-cost-km">—</strong>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Passo 2: Passageiros -->
+        <section class="card">
+          <header class="card-head">
+            <span class="num">2</span>
+            <h2>Passageiros</h2>
+            <span class="pax-counter" id="pax-counter">0 / 4</span>
+          </header>
+          <div class="card-body">
+            <p class="help">Toque no mapa para marcar <b>EMBARQUE</b> depois <b>DESEMBARQUE</b> de cada passageiro.</p>
+
+            <div class="pickup-mode" id="pickup-mode">
+              <div class="pickup-step" data-step="pickup">
+                <span class="step-pill pill-pickup">1</span>
+                <span>Toque o EMBARQUE no mapa</span>
+              </div>
+              <div class="pickup-step" data-step="dropoff">
+                <span class="step-pill pill-dropoff">2</span>
+                <span>Toque o DESEMBARQUE no mapa</span>
+              </div>
+            </div>
+
+            <ul class="passenger-list" id="passenger-list"></ul>
+
+            <div class="row-actions">
+              <button id="btn-add-passenger" class="btn btn-secondary">＋ Novo passageiro</button>
+              <button id="btn-clear" class="btn btn-ghost">Limpar tudo</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Passo 3: Rota Inteligente -->
+        <section class="card">
+          <header class="card-head">
+            <span class="num">3</span>
+            <h2>Rota inteligente</h2>
+          </header>
+          <div class="card-body">
+            <button id="btn-calculate" class="btn btn-primary btn-big" disabled>
+              CALCULAR MELHOR ROTA
+            </button>
+
+            <div id="route-summary" class="route-summary hidden">
+              <div class="summary-grid">
+                <div class="summary-item">
+                  <span class="sm-label">Distância total</span>
+                  <strong id="sm-distance">—</strong>
+                </div>
+                <div class="summary-item">
+                  <span class="sm-label">Tempo estimado</span>
+                  <strong id="sm-time">—</strong>
+                </div>
+                <div class="summary-item">
+                  <span class="sm-label">Combustível</span>
+                  <strong id="sm-fuel">—</strong>
+                </div>
+                <div class="summary-item">
+                  <span class="sm-label">Custo total</span>
+                  <strong id="sm-cost">—</strong>
+                </div>
+              </div>
+
+              <div class="reasoning">
+                <h3>Por que esta distribuição?</h3>
+                <ul id="reasoning-list"></ul>
+              </div>
+
+              <div class="stops-order">
+                <h3>Ordem das paradas</h3>
+                <ol id="stops-list"></ol>
+              </div>
+
+              <button id="btn-accept" class="btn btn-accept btn-big">
+                ACEITAR ROTA E INICIAR
+              </button>
+            </div>
+          </div>
+        </section>
+      </aside>
+
+      <!-- Mapa 3D -->
+      <section class="map-area">
+        <div id="map"></div>
+        <!-- Controles sobrepostos -->
+        <div class="map-controls">
+          <button class="map-btn" id="btn-3d" title="Alternar visão 3D">3D</button>
+          <button class="map-btn" id="btn-recenter" title="Centralizar">⦿</button>
+          <button class="map-btn" id="btn-locate" title="Minha localização">📍</button>
+        </div>
+
+        <!-- HUD de navegação -->
+        <div id="nav-hud" class="nav-hud hidden">
+          <div class="nav-head">
+            <div class="nav-step-info">
+              <div class="nav-distance" id="nav-distance">—</div>
+              <div class="nav-maneuver" id="nav-maneuver">Aguarde…</div>
+            </div>
+            <button id="btn-stop-nav" class="btn-stop">Encerrar</button>
+          </div>
+          <div class="nav-instruction" id="nav-instruction">Aguardando instrução</div>
+          <div class="nav-footer">
+            <div><span>Próxima parada</span><strong id="nav-next-stop">—</strong></div>
+            <div><span>Restam</span><strong id="nav-remaining">—</strong></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="vehicles.js"></script>
+  <script src="logistics.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
