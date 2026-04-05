@@ -532,6 +532,7 @@ body {
   gap: 8px;
   z-index: 5;
 }
+body.is-navigating .map-controls { top: 70px; }
 .map-btn {
   width: 44px; height: 44px;
   border-radius: 10px;
@@ -557,9 +558,26 @@ body {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   border: 2px solid var(--blue-900);
-  padding: 16px 18px;
-  z-index: 5;
+  padding: 0;
+  z-index: 20;
+  overflow: hidden;
+  box-sizing: border-box;
 }
+.nav-hud * { box-sizing: border-box; }
+.nav-progress {
+  height: 5px;
+  background: var(--blue-50);
+  position: relative;
+}
+.nav-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--blue-500), var(--blue-900));
+  transition: width 0.4s ease-out;
+}
+.nav-head, .nav-instruction, .nav-footer { padding-left: 18px; padding-right: 18px; }
+.nav-head { padding-top: 14px; }
+.nav-footer { padding-bottom: 14px; }
 .nav-head {
   display: flex;
   align-items: center;
@@ -567,7 +585,9 @@ body {
   margin-bottom: 10px;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--gray-300);
+  min-width: 0;
 }
+.nav-head > * { min-width: 0; }
 .nav-step-info { flex: 1; }
 .nav-distance {
   font-size: 32px;
@@ -614,13 +634,19 @@ body {
   color: white;
   border: none;
   border-radius: 10px;
-  padding: 10px 14px;
+  padding: 10px 16px;
   font-weight: 800;
   font-size: 13px;
   cursor: pointer;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  min-height: 40px;
+  white-space: nowrap;
+  font-family: inherit;
+  flex-shrink: 0;
 }
+.btn-stop:hover { background: #a53022; }
+.btn-stop:active { transform: scale(0.97); }
 
 /* ================= Popups do mapa ================= */
 .maplibregl-popup-content {
@@ -631,11 +657,77 @@ body {
   font-weight: 600;
 }
 
+/* ================= Modo navegação em tela cheia ================= */
+body.is-navigating .side-panel { display: none; }
+body.is-navigating .main-grid { grid-template-columns: 1fr !important; grid-template-rows: 1fr !important; }
+body.is-navigating .status-pill.nav { background: var(--blue-900); color: var(--white); }
+body.is-navigating .status-pill.nav .dot { background: var(--yellow); }
+
 /* ================= Responsivo ================= */
 @media (max-width: 900px) {
-  .main-grid { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
-  .side-panel { border-right: none; border-bottom: 1px solid var(--gray-300); max-height: 50vh; }
-  .topbar { padding: 8px 14px; }
-  .brand-text h1 { font-size: 18px; }
-  .brand-text span { font-size: 10px; }
+  .main-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  .side-panel {
+    border-right: none;
+    border-bottom: 1px solid var(--gray-300);
+    max-height: 55vh;
+    padding: 12px;
+    gap: 10px;
+  }
+  .map-area { min-height: 45vh; }
+  .topbar { padding: 8px 12px; }
+  .brand-text h1 { font-size: 17px; }
+  .brand-text span { font-size: 9px; }
+  .status-pill { padding: 6px 10px; font-size: 11px; }
+  .status-pill .dot { width: 7px; height: 7px; }
+  .card-head { padding: 11px 13px; }
+  .card-head h2 { font-size: 15px; }
+  .card-body { padding: 13px; }
+  .btn-big { padding: 14px; font-size: 15px; }
+  .select-lg, .input-lg { padding: 11px 12px; font-size: 15px; }
+  .summary-item strong { font-size: 16px; }
+  .info-item strong { font-size: 16px; }
+  .map-controls { top: 10px; right: 10px; gap: 6px; }
+  .map-btn { width: 40px; height: 40px; font-size: 13px; }
+
+  /* HUD de navegação mobile */
+  .nav-hud {
+    left: 10px; right: 10px; bottom: 10px;
+  }
+  .nav-head { padding-top: 12px; }
+  .nav-footer { padding-bottom: 12px; }
+  .nav-head, .nav-instruction, .nav-footer { padding-left: 14px; padding-right: 14px; }
+  .nav-distance { font-size: 28px; }
+  .nav-instruction { font-size: 16px; padding: 4px 14px; }
+  .nav-maneuver { font-size: 11px; }
+  .nav-footer { gap: 12px; margin-top: 8px; padding-top: 8px; }
+  .nav-footer strong { font-size: 13px; }
+  .nav-footer span { font-size: 9px; }
+  .btn-stop { padding: 8px 10px; font-size: 11px; min-height: 36px; }
+  .nav-head { gap: 8px; padding-bottom: 8px; }
+  .nav-step-info { min-width: 0; flex: 1; }
+  .nav-distance { font-size: 26px; }
+
+  /* Formulário mobile */
+  .passenger-form { padding: 10px; gap: 10px; }
+  .passenger-list { max-height: 180px; overflow-y: auto; }
+  .addr-suggestions { max-height: 180px; }
+  .addr-suggestion-item { padding: 12px; font-size: 15px; }
+}
+
+/* Tela bem pequena */
+@media (max-width: 480px) {
+  .main-grid { grid-template-rows: auto 1fr; }
+  .side-panel { max-height: 50vh; }
+  .brand-text span { display: none; }
+  .summary-grid { grid-template-columns: 1fr 1fr; gap: 6px; }
+  .summary-item { padding: 8px 10px; }
+  .summary-item strong { font-size: 14px; }
+  .sm-label { font-size: 9px; }
+  .reasoning, .stops-order { padding: 10px; }
+  .reasoning ul, .stops-order ol { font-size: 12px; }
+  .nav-distance { font-size: 26px; }
+  .nav-instruction { font-size: 15px; }
 }

@@ -255,12 +255,38 @@ function bindAddressAutocomplete(inputId, suggId, kind) {
   const sugg  = document.getElementById(suggId);
   let debounceT = null;
   let lastQuery = '';
+  let activeIdx = -1;
+  let currentResults = [];
+
+  function selectResult(result) {
+    input.value = result.displayName;
+    input.classList.add('valid');
+    sugg.classList.remove('show');
+    state.draft[kind] = { lng: result.lng, lat: result.lat, label: result.displayName };
+    updateSaveButton();
+    state.map.flyTo({ center: [result.lng, result.lat], zoom: 15, pitch: 55, duration: 800 });
+    // pula para o próximo campo automaticamente
+    if (kind === 'pickup') {
+      const next = document.getElementById('input-dropoff');
+      if (next && !next.classList.contains('valid')) next.focus();
+    } else {
+      document.getElementById('btn-save-passenger').focus();
+    }
+  }
+
+  function highlightIdx(idx) {
+    sugg.querySelectorAll('.addr-suggestion-item').forEach((el, i) => {
+      el.classList.toggle('active', i === idx);
+    });
+    activeIdx = idx;
+  }
 
   input.addEventListener('input', () => {
     const q = input.value.trim();
     input.classList.remove('valid');
     state.draft[kind] = null;
     updateSaveButton();
+    activeIdx = -1;
 
     clearTimeout(debounceT);
     if (q.length < 3) { sugg.classList.remove('show'); sugg.innerHTML = ''; return; }
@@ -272,17 +298,8 @@ function bindAddressAutocomplete(inputId, suggId, kind) {
       try {
         const results = await geocodeAddress(q);
         input.classList.remove('loading');
-        renderSuggestions(sugg, results, result => {
-          input.value = result.displayName;
-          input.classList.add('valid');
-          sugg.classList.remove('show');
-          state.draft[kind] = {
-            lng: result.lng, lat: result.lat, label: result.displayName
-          };
-          updateSaveButton();
-          // centraliza mapa no endereço
-          state.map.flyTo({ center: [result.lng, result.lat], zoom: 15, pitch: 55, duration: 800 });
-        });
+        currentResults = results;
+        renderSuggestions(sugg, results, selectResult);
       } catch (err) {
         input.classList.remove('loading');
         console.warn('Geocode falhou:', err);
@@ -290,6 +307,28 @@ function bindAddressAutocomplete(inputId, suggId, kind) {
         sugg.classList.add('show');
       }
     }, 350);
+  });
+
+  // Navegação por teclado
+  input.addEventListener('keydown', e => {
+    if (!sugg.classList.contains('show') || currentResults.length === 0) {
+      if (e.key === 'Enter') { e.preventDefault(); document.getElementById('btn-save-passenger').click(); }
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      highlightIdx(Math.min(activeIdx + 1, currentResults.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      highlightIdx(Math.max(activeIdx - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (activeIdx >= 0 && currentResults[activeIdx]) selectResult(currentResults[activeIdx]);
+      else if (currentResults.length > 0) selectResult(currentResults[0]);
+    } else if (e.key === 'Escape') {
+      sugg.classList.remove('show');
+      input.blur();
+    }
   });
 
   // fecha sugestões ao clicar fora
@@ -522,7 +561,7 @@ async function calculateRoute() {
   const waypoints = [state.driverLocation, ...result.orderedStops.map(s => s.coord)];
   try {
     const osrm = await fetchOSRMRoute(waypoints);
-    if (osrm) {
+    if (osrm && osrm.steps.length) {
       state.osrmGeometry = osrm.geometry;
       state.osrmSteps = osrm.steps;
       // sobrescreve distância/tempo com valores reais do OSRM
@@ -530,9 +569,13 @@ async function calculateRoute() {
       result.timeMin = osrm.duration / 60;
       result.litersUsed = result.distance / state.vehicle.consumption[state.fuel];
       result.fuelCost = result.litersUsed * state.fuelPrice;
+    } else {
+      throw new Error('OSRM vazio');
     }
   } catch (err) {
-    console.warn('OSRM indisponível, usando linha reta:', err);
+    console.warn('OSRM indisponível, gerando rota simplificada:', err);
+    state.osrmGeometry = null;
+    state.osrmSteps = buildFallbackSteps(waypoints, result.orderedStops);
   }
 
   renderRouteSummary(result);
@@ -540,6 +583,38 @@ async function calculateRoute() {
   fitMapToRoute(waypoints);
   setStatus('Rota pronta — revise e aceite.');
   document.getElementById('btn-calculate').disabled = false;
+}
+
+// Gera passos de navegação simples quando OSRM não está disponível
+function buildFallbackSteps(waypoints, orderedStops) {
+  const steps = [];
+  for (let i = 1; i < waypoints.length; i++) {
+    const dist = Logistics.haversineKm(waypoints[i-1], waypoints[i]) * 1000 * 1.32;
+    const stop = orderedStops[i-1];
+    const p = state.passengers.find(x => x.id === stop.passengerId);
+    const action = stop.type === 'pickup'
+      ? 'Siga até o embarque de ' + (p ? p.name : 'passageiro')
+      : 'Siga até o desembarque de ' + (p ? p.name : 'passageiro');
+    const label = stop.coord.label || '';
+    steps.push({
+      legIdx: i - 1,
+      distance: dist,
+      duration: (dist / 1000) / 32 * 3600,
+      name: label,
+      maneuver: { type: 'turn', modifier: 'straight' },
+      instruction: action + (label ? ' — ' + label.split(' - ')[0] : ''),
+    });
+  }
+  // adiciona passo final de chegada
+  steps.push({
+    legIdx: waypoints.length - 2,
+    distance: 0,
+    duration: 0,
+    name: '',
+    maneuver: { type: 'arrive', modifier: '' },
+    instruction: 'Trajeto finalizado',
+  });
+  return steps;
 }
 
 async function fetchOSRMRoute(waypoints) {
@@ -656,20 +731,24 @@ function fitMapToRoute(waypoints) {
 // =============== Navegação guiada ===============
 function acceptAndStartNavigation() {
   if (!state.route) return;
+  if (!state.osrmSteps || state.osrmSteps.length === 0) {
+    alert('Rota sem passos de navegação. Tente calcular a rota novamente.');
+    return;
+  }
   state.navigating = true;
   state.currentStepIdx = 0;
+  document.body.classList.add('is-navigating');
   document.getElementById('nav-hud').classList.remove('hidden');
+  document.getElementById('btn-accept').disabled = true;
+  document.getElementById('btn-calculate').disabled = true;
   setStatus('Navegando — siga as instruções por voz', 'nav');
-  speak('Rota aceita. Iniciando navegação. ' + (state.osrmSteps[0]?.instruction || 'Siga em frente.'));
+  speak('Rota aceita. ' + state.osrmSteps[0].instruction);
   updateNavHud();
-  // flyTo primeiro ponto
-  const first = state.route.orderedStops[0].coord;
+  // zoom na posição do motorista
   state.map.flyTo({
     center: [state.driverLocation.lng, state.driverLocation.lat],
     zoom: 16, pitch: 65, bearing: -18, duration: 1500,
   });
-
-  // avança passos automaticamente (simulação didática)
   runStepProgress();
 }
 
@@ -680,7 +759,7 @@ function runStepProgress() {
   const step = state.osrmSteps[state.currentStepIdx];
   if (!step) return;
   // próximo passo em tempo proporcional à duração do passo (acelerado 8×)
-  const ms = Math.max(1800, (step.duration * 1000) / 8);
+  const ms = Math.max(2200, (step.duration * 1000) / 8);
   stepTimer = setTimeout(() => {
     state.currentStepIdx++;
     if (state.currentStepIdx >= state.osrmSteps.length) {
@@ -696,10 +775,15 @@ function runStepProgress() {
 
 function updateNavHud() {
   const step = state.osrmSteps[state.currentStepIdx];
-  if (!step) return;
+  if (!step) {
+    document.getElementById('nav-instruction').textContent = 'Preparando trajeto...';
+    document.getElementById('nav-distance').textContent = '—';
+    document.getElementById('nav-maneuver').textContent = '';
+    return;
+  }
   document.getElementById('nav-distance').textContent = formatDist(step.distance);
-  document.getElementById('nav-maneuver').textContent =
-    (step.maneuver.modifier || step.maneuver.type || '').toUpperCase();
+  const maneuverLabel = (step.maneuver.modifier || step.maneuver.type || '').toUpperCase();
+  document.getElementById('nav-maneuver').textContent = maneuverLabel || 'SEGUIR';
   document.getElementById('nav-instruction').textContent = step.instruction;
 
   // próxima parada
@@ -708,10 +792,17 @@ function updateNavHud() {
   if (nextStop) {
     const p = state.passengers.find(x => x.id === nextStop.passengerId);
     document.getElementById('nav-next-stop').textContent =
-      (nextStop.type === 'pickup' ? 'Embarcar ' : 'Desembarcar ') + (p ? p.name : '');
+      (nextStop.type === 'pickup' ? '↑ Embarcar ' : '↓ Desembarcar ') + (p ? p.name : '');
+  } else {
+    document.getElementById('nav-next-stop').textContent = '—';
   }
   const remaining = state.osrmSteps.slice(state.currentStepIdx).reduce((s, x) => s + x.distance, 0);
   document.getElementById('nav-remaining').textContent = formatDist(remaining);
+
+  // também mostra progresso total
+  const progress = Math.round((state.currentStepIdx / state.osrmSteps.length) * 100);
+  const bar = document.getElementById('nav-progress-bar');
+  if (bar) bar.style.width = progress + '%';
 }
 
 function formatDist(m) {
@@ -721,18 +812,43 @@ function formatDist(m) {
 
 function finalizeNavigation() {
   speak('Trajeto concluído. Todos os passageiros foram entregues.');
-  document.getElementById('nav-instruction').textContent = 'Trajeto concluído';
+  document.getElementById('nav-instruction').textContent = '✓ Trajeto concluído';
   document.getElementById('nav-distance').textContent = '—';
+  document.getElementById('nav-maneuver').textContent = 'FINALIZADO';
+  document.getElementById('btn-stop-nav').textContent = 'Nova corrida';
   setStatus('Corrida finalizada com sucesso');
-  setTimeout(stopNavigation, 3500);
 }
 
 function stopNavigation() {
   state.navigating = false;
   clearTimeout(stepTimer);
+  document.body.classList.remove('is-navigating');
   document.getElementById('nav-hud').classList.add('hidden');
-  setStatus('Pronto para nova corrida');
+  document.getElementById('btn-stop-nav').textContent = 'Encerrar';
   if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  // Reset total para nova corrida
+  resetForNewTrip();
+}
+
+function resetForNewTrip() {
+  state.passengers = [];
+  state.draft = { pickup: null, dropoff: null };
+  state.route = null;
+  state.osrmGeometry = null;
+  state.osrmSteps = [];
+  state.currentStepIdx = 0;
+  document.getElementById('input-pickup').value = '';
+  document.getElementById('input-dropoff').value = '';
+  document.getElementById('input-pickup').classList.remove('valid');
+  document.getElementById('input-dropoff').classList.remove('valid');
+  renderPassengers();
+  clearRouteOnMap();
+  clearPassengerMarkers();
+  document.getElementById('route-summary').classList.add('hidden');
+  document.getElementById('btn-calculate').disabled = true;
+  document.getElementById('btn-accept').disabled = false;
+  document.getElementById('btn-save-passenger').disabled = true;
+  setStatus('Pronto para nova corrida');
 }
 
 // =============== Voz (pt-BR) ===============
