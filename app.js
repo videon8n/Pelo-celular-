@@ -108,11 +108,18 @@ function updateVehicleInfo() {
 
 // =============== Mapa 3D ===============
 function initMap() {
+  // Tenta usar localização salva do GPS como centro inicial
+  const savedLng = parseFloat(localStorage.getItem('taxirota.lng'));
+  const savedLat = parseFloat(localStorage.getItem('taxirota.lat'));
+  if (!isNaN(savedLng) && !isNaN(savedLat)) {
+    state.driverLocation = { lng: savedLng, lat: savedLat };
+  }
+
   state.map = new maplibregl.Map({
     container: 'map',
     style: 'https://tiles.openfreemap.org/styles/liberty',
     center: [state.driverLocation.lng, state.driverLocation.lat],
-    zoom: 13,
+    zoom: 15,
     pitch: 55,
     bearing: -18,
     antialias: true,
@@ -443,16 +450,54 @@ function savePassengerFromForm() {
   state.map.fitBounds(bounds, { padding: 80, pitch: 55, duration: 900 });
 }
 
+let geoWatchId = null;
+
 function tryAutoLocate() {
-  if (!navigator.geolocation) return;
-  navigator.geolocation.getCurrentPosition(pos => {
-    state.driverLocation = { lng: pos.coords.longitude, lat: pos.coords.latitude };
-    if (driverMarker) driverMarker.setLngLat([state.driverLocation.lng, state.driverLocation.lat]);
+  if (!navigator.geolocation) {
+    setStatus('GPS não disponível — posição padrão em São Paulo');
+    return;
+  }
+  setStatus('Buscando sua localização ao vivo...', 'nav');
+
+  // Pega localização imediata (pode ser cache)
+  navigator.geolocation.getCurrentPosition(onGeoSuccess, onGeoError, {
+    enableHighAccuracy: true,
+    timeout: 10000,
+    maximumAge: 30000,
+  });
+
+  // Inicia rastreamento contínuo para posição ao vivo
+  geoWatchId = navigator.geolocation.watchPosition(onGeoSuccess, () => {}, {
+    enableHighAccuracy: true,
+    timeout: 15000,
+    maximumAge: 5000,
+  });
+}
+
+let hasFirstLocation = false;
+function onGeoSuccess(pos) {
+  state.driverLocation = { lng: pos.coords.longitude, lat: pos.coords.latitude };
+  // Salva no localStorage para próxima abertura
+  localStorage.setItem('taxirota.lng', pos.coords.longitude);
+  localStorage.setItem('taxirota.lat', pos.coords.latitude);
+  if (driverMarker) {
+    driverMarker.setLngLat([state.driverLocation.lng, state.driverLocation.lat]);
+  }
+  if (!hasFirstLocation) {
+    hasFirstLocation = true;
     state.map.flyTo({
       center: [state.driverLocation.lng, state.driverLocation.lat],
-      zoom: 14, pitch: 55, duration: 1200,
+      zoom: 15, pitch: 55, duration: 1200,
     });
-  }, () => {}, { enableHighAccuracy: false, timeout: 6000, maximumAge: 300000 });
+    setStatus('Localização encontrada');
+  }
+}
+
+function onGeoError(err) {
+  console.warn('GPS erro:', err.message);
+  if (!hasFirstLocation) {
+    setStatus('GPS indisponível — use o botão 📍 para tentar novamente');
+  }
 }
 
 // =============== Renderização de passageiros ===============
@@ -1013,17 +1058,23 @@ function locateMe() {
   }
   setStatus('Obtendo sua localização...', 'nav');
   navigator.geolocation.getCurrentPosition(pos => {
-    state.driverLocation = { lng: pos.coords.longitude, lat: pos.coords.latitude };
-    if (driverMarker) driverMarker.setLngLat([state.driverLocation.lng, state.driverLocation.lat]);
+    onGeoSuccess(pos);
     state.map.flyTo({
       center: [state.driverLocation.lng, state.driverLocation.lat],
       zoom: 15, pitch: 55, bearing: -18, duration: 1200,
     });
-    setStatus('Localização obtida');
+    setStatus('Localização atualizada');
   }, err => {
     alert('Não foi possível obter a localização: ' + err.message);
     setStatus('Pronto para embarcar');
-  }, { enableHighAccuracy: true, timeout: 8000 });
+  }, { enableHighAccuracy: true, timeout: 10000 });
+
+  // Reinicia rastreamento contínuo se não estiver ativo
+  if (!geoWatchId) {
+    geoWatchId = navigator.geolocation.watchPosition(onGeoSuccess, () => {}, {
+      enableHighAccuracy: true, timeout: 15000, maximumAge: 5000,
+    });
+  }
 }
 
 // =============== Status ===============
