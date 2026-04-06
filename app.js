@@ -728,7 +728,35 @@ function fitMapToRoute(waypoints) {
   state.map.fitBounds(bounds, { padding: 80, pitch: 55, bearing: -18, duration: 1200 });
 }
 
-// =============== Navegação guiada ===============
+// =============== Navegação guiada com acompanhamento no mapa ===============
+
+// Extrai coordenadas [lng, lat] da rota para animação do carro
+function getRouteCoordinates() {
+  if (state.osrmGeometry && state.osrmGeometry.coordinates) {
+    return state.osrmGeometry.coordinates;
+  }
+  return [
+    [state.driverLocation.lng, state.driverLocation.lat],
+    ...state.route.orderedStops.map(s => [s.coord.lng, s.coord.lat]),
+  ];
+}
+
+// Calcula ângulo de direção entre dois pontos
+function calcBearing(from, to) {
+  const toRad = d => d * Math.PI / 180;
+  const toDeg = r => r * 180 / Math.PI;
+  const dLng = toRad(to[0] - from[0]);
+  const lat1 = toRad(from[1]);
+  const lat2 = toRad(to[1]);
+  const y = Math.sin(dLng) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+let animFrame = null;
+let routeCoords = [];
+let routePointIdx = 0;
+
 function acceptAndStartNavigation() {
   if (!state.route) return;
   if (!state.osrmSteps || state.osrmSteps.length === 0) {
@@ -737,6 +765,8 @@ function acceptAndStartNavigation() {
   }
   state.navigating = true;
   state.currentStepIdx = 0;
+  routeCoords = getRouteCoordinates();
+  routePointIdx = 0;
   document.body.classList.add('is-navigating');
   document.getElementById('nav-hud').classList.remove('hidden');
   document.getElementById('btn-accept').disabled = true;
@@ -744,12 +774,104 @@ function acceptAndStartNavigation() {
   setStatus('Navegando — siga as instruções por voz', 'nav');
   speak('Rota aceita. ' + state.osrmSteps[0].instruction);
   updateNavHud();
-  // zoom na posição do motorista
+
+  // Posiciona câmera atrás do carro na direção da rota
+  const start = routeCoords[0];
+  const next = routeCoords[Math.min(1, routeCoords.length - 1)];
+  const bearing = calcBearing(start, next);
   state.map.flyTo({
-    center: [state.driverLocation.lng, state.driverLocation.lat],
-    zoom: 16, pitch: 65, bearing: -18, duration: 1500,
+    center: start,
+    zoom: 17, pitch: 65, bearing: bearing,
+    duration: 1500,
   });
+
+  // Inicia animação do carro + instruções por voz
   runStepProgress();
+  setTimeout(() => startCarAnimation(), 1600); // espera o flyTo terminar
+}
+
+// =============== Animação do carro percorrendo a rota ===============
+function startCarAnimation() {
+  if (!state.navigating || routeCoords.length < 2) return;
+
+  // Percorre tudo em duração total / 8 (simulação acelerada)
+  const totalDuration = state.osrmSteps.reduce((s, x) => s + x.duration, 0);
+  const realDurationMs = Math.max(15000, (totalDuration * 1000) / 8);
+  const msPerPoint = realDurationMs / routeCoords.length;
+  let lastTime = performance.now();
+  let progress = 0;
+
+  function tick(now) {
+    if (!state.navigating) return;
+    const dt = now - lastTime;
+    lastTime = now;
+
+    progress += dt / msPerPoint;
+    const idx = Math.min(Math.floor(progress), routeCoords.length - 1);
+
+    if (idx !== routePointIdx) {
+      routePointIdx = idx;
+      const pos = routeCoords[idx];
+      const nextPos = routeCoords[Math.min(idx + 1, routeCoords.length - 1)];
+      const bearing = calcBearing(pos, nextPos);
+
+      // Move marcador do carro
+      if (driverMarker) {
+        driverMarker.setLngLat(pos);
+      }
+
+      // Câmera acompanha suavemente
+      state.map.easeTo({
+        center: pos,
+        bearing: bearing,
+        zoom: 17,
+        pitch: 65,
+        duration: 300,
+        easing: t => t,
+      });
+
+      // Marca trecho já percorrido
+      updateDrivenRoute(idx);
+    }
+
+    if (idx < routeCoords.length - 1) {
+      animFrame = requestAnimationFrame(tick);
+    }
+  }
+
+  animFrame = requestAnimationFrame(tick);
+}
+
+// Mostra parte já percorrida em cor mais clara
+function updateDrivenRoute(currentIdx) {
+  if (!state.map.getSource('route-driven')) {
+    state.map.addSource('route-driven', {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] }
+    });
+    state.map.addLayer({
+      id: 'route-driven-line',
+      type: 'line',
+      source: 'route-driven',
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: {
+        'line-color': '#8ab4f8',
+        'line-width': 6,
+        'line-opacity': 0.5,
+      }
+    }, 'route-line');
+  }
+  const driven = routeCoords.slice(0, currentIdx + 1);
+  if (driven.length >= 2) {
+    state.map.getSource('route-driven').setData({
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: driven },
+        properties: {},
+      }]
+    });
+  }
 }
 
 let stepTimer = null;
@@ -758,7 +880,6 @@ function runStepProgress() {
   clearTimeout(stepTimer);
   const step = state.osrmSteps[state.currentStepIdx];
   if (!step) return;
-  // próximo passo em tempo proporcional à duração do passo (acelerado 8×)
   const ms = Math.max(2200, (step.duration * 1000) / 8);
   stepTimer = setTimeout(() => {
     state.currentStepIdx++;
@@ -822,11 +943,17 @@ function finalizeNavigation() {
 function stopNavigation() {
   state.navigating = false;
   clearTimeout(stepTimer);
+  if (animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
   document.body.classList.remove('is-navigating');
   document.getElementById('nav-hud').classList.add('hidden');
   document.getElementById('btn-stop-nav').textContent = 'Encerrar';
   if ('speechSynthesis' in window) window.speechSynthesis.cancel();
-  // Reset total para nova corrida
+  // Limpa camada de rota percorrida
+  if (state.map.getSource('route-driven')) {
+    state.map.getSource('route-driven').setData({ type: 'FeatureCollection', features: [] });
+  }
+  // Volta mapa para visão geral
+  state.map.easeTo({ pitch: 55, bearing: -18, zoom: 13, duration: 800 });
   resetForNewTrip();
 }
 
