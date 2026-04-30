@@ -10,7 +10,9 @@ const state = {
   draft: {              // rascunho do passageiro sendo criado
     pickup: null,       // { lng, lat, label }
     dropoff: null,
+    destination: null,  // destino da planilha
   },
+  destination: null,    // { lng, lat, label } destino fixo (empresa)
   vehicle: null,
   fuel: 'gasolina',
   fuelPrice: 6.19,
@@ -232,6 +234,12 @@ function bindUI() {
   bindAddressAutocomplete('input-pickup', 'sugg-pickup', 'pickup');
   bindAddressAutocomplete('input-dropoff', 'sugg-dropoff', 'dropoff');
 
+  // Busca de empresas no mapa
+  bindSearchPlaces();
+
+  // Importação de planilha
+  bindSpreadsheetImport();
+
   // Tenta usar GPS logo na abertura
   tryAutoLocate();
 }
@@ -270,9 +278,12 @@ function bindAddressAutocomplete(inputId, suggId, kind) {
     input.classList.add('valid');
     sugg.classList.remove('show');
     state.draft[kind] = { lng: result.lng, lat: result.lat, label: result.displayName };
+    if (kind === 'destination') {
+      state.destination = state.draft[kind];
+      if (typeof updateMountButton === 'function') updateMountButton();
+    }
     updateSaveButton();
     state.map.flyTo({ center: [result.lng, result.lat], zoom: 15, pitch: 55, duration: 800 });
-    // pula para o próximo campo automaticamente
     if (kind === 'pickup') {
       const next = document.getElementById('input-dropoff');
       if (next && !next.classList.contains('valid')) next.focus();
@@ -451,6 +462,8 @@ function savePassengerFromForm() {
 }
 
 let geoWatchId = null;
+let lastGpsCoord = null;
+const GPS_MIN_MOVE_METERS = 8;
 
 function tryAutoLocate() {
   if (!navigator.geolocation) {
@@ -475,18 +488,32 @@ function tryAutoLocate() {
 }
 
 let hasFirstLocation = false;
+function gpsDistanceMeters(a, b) {
+  const dLat = (b.lat - a.lat) * 111320;
+  const dLng = (b.lng - a.lng) * 111320 * Math.cos(a.lat * Math.PI / 180);
+  return Math.sqrt(dLat * dLat + dLng * dLng);
+}
+
 function onGeoSuccess(pos) {
-  state.driverLocation = { lng: pos.coords.longitude, lat: pos.coords.latitude };
-  // Salva no localStorage para próxima abertura
-  localStorage.setItem('taxirota.lng', pos.coords.longitude);
-  localStorage.setItem('taxirota.lat', pos.coords.latitude);
+  const newCoord = { lng: pos.coords.longitude, lat: pos.coords.latitude };
+
+  // Ignora atualizações quando parado (< 8 metros de distância)
+  if (lastGpsCoord && hasFirstLocation) {
+    const moved = gpsDistanceMeters(lastGpsCoord, newCoord);
+    if (moved < GPS_MIN_MOVE_METERS) return;
+  }
+  lastGpsCoord = newCoord;
+
+  state.driverLocation = newCoord;
+  localStorage.setItem('taxirota.lng', newCoord.lng);
+  localStorage.setItem('taxirota.lat', newCoord.lat);
   if (driverMarker) {
-    driverMarker.setLngLat([state.driverLocation.lng, state.driverLocation.lat]);
+    driverMarker.setLngLat([newCoord.lng, newCoord.lat]);
   }
   if (!hasFirstLocation) {
     hasFirstLocation = true;
     state.map.flyTo({
-      center: [state.driverLocation.lng, state.driverLocation.lat],
+      center: [newCoord.lng, newCoord.lat],
       zoom: 15, pitch: 55, duration: 1200,
     });
     setStatus('Localização encontrada');
@@ -1076,6 +1103,338 @@ function locateMe() {
     });
   }
 }
+
+// =============== Importação de planilha Excel ===============
+let spreadsheetData = [];
+let selectedCollaborators = new Set();
+
+function bindSpreadsheetImport() {
+  const fileInput = document.getElementById('file-input');
+  document.getElementById('btn-import').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', handleFileUpload);
+  document.getElementById('city-select').addEventListener('change', e => filterByCity(e.target.value));
+  document.getElementById('btn-mount-route').addEventListener('click', mountRouteFromSpreadsheet);
+  bindAddressAutocomplete('input-destination', 'sugg-destination', 'destination');
+}
+
+function handleFileUpload(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  setStatus('Lendo planilha...', 'busy');
+  const reader = new FileReader();
+  reader.onload = function(evt) {
+    try {
+      const wb = XLSX.read(evt.target.result, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
+      spreadsheetData = rows.map(r => {
+        const name = (r['Colaborador'] || r['Nome'] || r['COLABORADOR'] || r['NOME'] || Object.values(r)[0] || '').toString().trim();
+        const addr = (r['Endereço'] || r['ENDEREÇO'] || r['Endereco'] || r['ENDERECO'] || Object.values(r)[1] || '').toString().trim();
+        const city = (r['Cidade'] || r['CIDADE'] || Object.values(r)[2] || '').toString().trim();
+        const phone = (r['Contato'] || r['CONTATO'] || r['Telefone'] || r['TELEFONE'] || Object.values(r)[3] || '').toString().trim();
+        return { name, addr, city, phone };
+      }).filter(r => r.name && r.addr);
+
+      if (spreadsheetData.length === 0) {
+        alert('Planilha vazia ou sem dados válidos (precisa ter Colaborador e Endereço).');
+        setStatus('Pronto para embarcar');
+        return;
+      }
+
+      populateCitySelect();
+      document.getElementById('import-panel').classList.remove('hidden');
+      setStatus(spreadsheetData.length + ' colaboradores carregados da planilha');
+    } catch (err) {
+      alert('Erro ao ler a planilha: ' + err.message);
+      setStatus('Pronto para embarcar');
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function populateCitySelect() {
+  const sel = document.getElementById('city-select');
+  sel.innerHTML = '<option value="">— Selecione a cidade —</option>';
+  const cities = [...new Set(spreadsheetData.map(r => r.city.toLowerCase()))].filter(Boolean).sort();
+  cities.forEach(c => {
+    const count = spreadsheetData.filter(r => r.city.toLowerCase() === c).length;
+    const opt = document.createElement('option');
+    opt.value = c;
+    opt.textContent = c.charAt(0).toUpperCase() + c.slice(1) + ` (${count})`;
+    sel.appendChild(opt);
+  });
+}
+
+function filterByCity(city) {
+  const list = document.getElementById('collaborator-list');
+  list.innerHTML = '';
+  selectedCollaborators.clear();
+  updateMountButton();
+
+  if (!city) return;
+  const filtered = spreadsheetData.filter(r => r.city.toLowerCase() === city.toLowerCase());
+
+  filtered.forEach((c, i) => {
+    const li = document.createElement('li');
+    li.className = 'collaborator-item';
+    li.dataset.idx = i;
+    li.innerHTML = `
+      <input type="checkbox" id="collab-${i}" />
+      <div class="collab-info">
+        <div class="collab-name">${escapeHtml(c.name)}</div>
+        <div class="collab-addr">${escapeHtml(c.addr)}, ${escapeHtml(c.city)}</div>
+      </div>
+    `;
+    li.addEventListener('click', e => {
+      if (e.target.tagName === 'INPUT') return;
+      const cb = li.querySelector('input[type=checkbox]');
+      cb.checked = !cb.checked;
+      toggleCollaborator(i, cb.checked, li, filtered);
+    });
+    li.querySelector('input').addEventListener('change', e => {
+      toggleCollaborator(i, e.target.checked, li, filtered);
+    });
+    list.appendChild(li);
+  });
+}
+
+function toggleCollaborator(idx, checked, li, all) {
+  if (checked) {
+    if (selectedCollaborators.size >= 4) {
+      li.querySelector('input').checked = false;
+      return;
+    }
+    selectedCollaborators.add(idx);
+    li.classList.add('selected');
+  } else {
+    selectedCollaborators.delete(idx);
+    li.classList.remove('selected');
+  }
+  // Marca max-reached nos não selecionados
+  document.querySelectorAll('.collaborator-item').forEach(el => {
+    el.classList.toggle('max-reached', selectedCollaborators.size >= 4);
+  });
+  updateMountButton();
+}
+
+function updateMountButton() {
+  const hasDestination = state.destination || document.getElementById('input-destination').classList.contains('valid');
+  const btn = document.getElementById('btn-mount-route');
+  btn.disabled = selectedCollaborators.size === 0 || !hasDestination;
+}
+
+async function mountRouteFromSpreadsheet() {
+  const city = document.getElementById('city-select').value;
+  const filtered = spreadsheetData.filter(r => r.city.toLowerCase() === city.toLowerCase());
+  const selected = [...selectedCollaborators].map(i => filtered[i]).filter(Boolean);
+
+  if (selected.length === 0) return;
+
+  // Destino
+  let dest = state.destination;
+  if (!dest) {
+    const destInput = document.getElementById('input-destination');
+    if (state.draft.destination) {
+      dest = state.draft.destination;
+    } else {
+      alert('Informe o endereço de destino (empresa).');
+      return;
+    }
+  }
+
+  const statusEl = document.getElementById('import-status');
+  statusEl.style.display = 'block';
+  document.getElementById('btn-mount-route').disabled = true;
+  setStatus('Buscando endereços na planilha...', 'busy');
+
+  // Limpa passageiros atuais
+  state.passengers = [];
+
+  for (let i = 0; i < selected.length; i++) {
+    const c = selected[i];
+    statusEl.textContent = `Buscando endereço ${i + 1} de ${selected.length}...`;
+    if (i > 0) await new Promise(r => setTimeout(r, 1100));
+
+    const query = c.addr + ', ' + c.city + ', SP, Brasil';
+    try {
+      const results = await geocodeAddress(query);
+      if (results.length > 0) {
+        const geo = results[0];
+        state.passengers.push({
+          id: 'imp' + Date.now() + i,
+          name: c.name,
+          color: PAX_COLORS[i],
+          pickup: { lng: geo.lng, lat: geo.lat, label: geo.displayName },
+          dropoff: { lng: dest.lng, lat: dest.lat, label: dest.label },
+        });
+      } else {
+        statusEl.textContent = `Endereço não encontrado: ${c.name}`;
+        await new Promise(r => setTimeout(r, 1500));
+      }
+    } catch (err) {
+      console.warn('Geocode failed for', c.name, err);
+    }
+  }
+
+  statusEl.style.display = 'none';
+  renderPassengers();
+  renderPassengerMarkers();
+  document.getElementById('btn-calculate').disabled = state.passengers.length === 0;
+  document.getElementById('btn-mount-route').disabled = false;
+
+  if (state.passengers.length > 0) {
+    const bounds = new maplibregl.LngLatBounds();
+    state.passengers.forEach(p => {
+      bounds.extend([p.pickup.lng, p.pickup.lat]);
+      bounds.extend([p.dropoff.lng, p.dropoff.lat]);
+    });
+    bounds.extend([state.driverLocation.lng, state.driverLocation.lat]);
+    state.map.fitBounds(bounds, { padding: 80, pitch: 55, duration: 900 });
+    setStatus(state.passengers.length + ' passageiros carregados da planilha');
+  } else {
+    setStatus('Nenhum endereço encontrado. Verifique a planilha.');
+  }
+}
+
+// =============== Busca de empresas/estabelecimentos ===============
+const placeMarkers = [];
+
+function bindSearchPlaces() {
+  const panel = document.getElementById('search-panel');
+  const input = document.getElementById('input-search-place');
+  let debounceS = null;
+
+  document.getElementById('btn-search-places').addEventListener('click', () => {
+    panel.classList.toggle('hidden');
+    if (!panel.classList.contains('hidden')) input.focus();
+  });
+  document.getElementById('btn-close-search').addEventListener('click', () => {
+    panel.classList.add('hidden');
+    clearPlaceMarkers();
+  });
+
+  // Chips de atalho
+  document.querySelectorAll('.chip[data-q]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      input.value = btn.dataset.q;
+      searchPlaces(btn.dataset.q);
+    });
+  });
+
+  // Busca por texto livre
+  input.addEventListener('input', () => {
+    clearTimeout(debounceS);
+    const q = input.value.trim();
+    if (q.length < 2) return;
+    debounceS = setTimeout(() => searchPlaces(q), 500);
+  });
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      clearTimeout(debounceS);
+      searchPlaces(input.value.trim());
+    }
+  });
+}
+
+async function searchPlaces(query) {
+  if (!query) return;
+  const container = document.getElementById('search-results');
+  container.innerHTML = '<div class="import-status">Buscando...</div>';
+  clearPlaceMarkers();
+
+  const v = state.driverLocation;
+  const params = new URLSearchParams({
+    q: query,
+    format: 'json',
+    addressdetails: '1',
+    limit: '15',
+    countrycodes: 'br',
+    'accept-language': 'pt-BR',
+    viewbox: `${v.lng - 0.3},${v.lat + 0.3},${v.lng + 0.3},${v.lat - 0.3}`,
+    bounded: '0',
+  });
+  try {
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
+      headers: { 'Accept': 'application/json' }
+    });
+    const data = await res.json();
+    container.innerHTML = '';
+    if (data.length === 0) {
+      container.innerHTML = '<div class="import-status">Nenhum resultado encontrado.</div>';
+      return;
+    }
+    data.forEach(r => {
+      const name = r.name || r.display_name.split(',')[0];
+      const addr = r.display_name;
+      const div = document.createElement('div');
+      div.className = 'search-result-item';
+      div.innerHTML = `<div class="sr-name">${escapeHtml(name)}</div><div class="sr-addr">${escapeHtml(addr)}</div>`;
+      div.addEventListener('click', () => {
+        // Centra no local
+        state.map.flyTo({ center: [parseFloat(r.lon), parseFloat(r.lat)], zoom: 16, pitch: 55, duration: 800 });
+      });
+      container.appendChild(div);
+      // Marcador no mapa
+      addPlaceMarker(r, name, addr);
+    });
+    // Fit bounds
+    const bounds = new maplibregl.LngLatBounds();
+    data.forEach(r => bounds.extend([parseFloat(r.lon), parseFloat(r.lat)]));
+    bounds.extend([v.lng, v.lat]);
+    state.map.fitBounds(bounds, { padding: 100, pitch: 55, duration: 800 });
+  } catch (err) {
+    container.innerHTML = '<div class="import-status">Erro na busca. Tente novamente.</div>';
+    console.warn('Search error:', err);
+  }
+}
+
+function addPlaceMarker(r, name, addr) {
+  const el = document.createElement('div');
+  el.style.cssText = `
+    width: 30px; height: 36px; background: #8a3ffc;
+    border: 3px solid white; border-radius: 50% 50% 50% 0;
+    transform: rotate(-45deg); box-shadow: 0 3px 8px rgba(0,0,0,0.3);
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+  `;
+  const inner = document.createElement('span');
+  inner.textContent = '★';
+  inner.style.cssText = 'color:white;font-size:13px;transform:rotate(45deg);font-weight:900;';
+  el.appendChild(inner);
+
+  const popup = new maplibregl.Popup({ offset: 25 }).setHTML(
+    `<b>${escapeHtml(name)}</b><br><small>${escapeHtml(addr)}</small><br>
+     <button onclick="useAsDestination(${r.lon},${r.lat},'${escapeHtml(name).replace(/'/g,"\\'")}')"
+       style="margin-top:6px;padding:6px 10px;background:#0b2545;color:white;border:none;border-radius:6px;font-weight:700;cursor:pointer;font-size:12px;">
+       Usar como destino
+     </button>`
+  );
+
+  const marker = new maplibregl.Marker({ element: el, anchor: 'bottom' })
+    .setLngLat([parseFloat(r.lon), parseFloat(r.lat)])
+    .setPopup(popup)
+    .addTo(state.map);
+
+  placeMarkers.push(marker);
+}
+
+function clearPlaceMarkers() {
+  placeMarkers.forEach(m => m.remove());
+  placeMarkers.length = 0;
+}
+
+function useAsDestination(lng, lat, name) {
+  state.destination = { lng, lat, label: name };
+  const destInput = document.getElementById('input-destination');
+  if (destInput) {
+    destInput.value = name;
+    destInput.classList.add('valid');
+  }
+  setStatus('Destino definido: ' + name);
+}
+window.useAsDestination = useAsDestination;
 
 // =============== Status ===============
 function setStatus(text, mode) {
