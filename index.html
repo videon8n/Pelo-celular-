@@ -85,7 +85,41 @@
             <span class="pax-counter" id="pax-counter">0 / 4</span>
           </header>
           <div class="card-body">
-            <p class="help">Digite o endereço de <b>EMBARQUE</b> e <b>DESEMBARQUE</b> de cada passageiro.</p>
+            <p class="help">Digite endereços ou <b>importe uma planilha</b> (.xlsx) com os colaboradores.</p>
+
+            <!-- Importação de planilha -->
+            <div class="import-section" id="import-section">
+              <button class="btn btn-secondary btn-big" id="btn-import">📋 IMPORTAR PLANILHA</button>
+              <input type="file" id="file-input" accept=".xlsx,.xls,.csv" hidden />
+
+              <div id="import-panel" class="import-panel hidden">
+                <div>
+                  <label class="field-label">Cidade dos embarques</label>
+                  <select id="city-select" class="select-lg">
+                    <option value="">— Selecione a cidade —</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label class="field-label">Destino (empresa)</label>
+                  <div class="addr-input-wrap">
+                    <input type="text" id="input-destination" class="input-lg addr-input"
+                      placeholder="Ex: Fábrica Samsung, Campinas"
+                      autocomplete="off" spellcheck="false" />
+                    <div class="addr-suggestions" id="sugg-destination"></div>
+                  </div>
+                </div>
+
+                <label class="field-label">Selecione até 4 colaboradores</label>
+                <ul class="collaborator-list" id="collaborator-list"></ul>
+
+                <button id="btn-mount-route" class="btn btn-accept btn-big" disabled>
+                  MONTAR ROTA COM SELECIONADOS
+                </button>
+
+                <div class="import-status" id="import-status" style="display:none"></div>
+              </div>
+            </div>
 
             <!-- Formulário de novo passageiro -->
             <div class="passenger-form" id="passenger-form">
@@ -179,6 +213,26 @@
           <button class="map-btn" id="btn-3d" title="Alternar visão 3D">3D</button>
           <button class="map-btn" id="btn-recenter" title="Centralizar">⦿</button>
           <button class="map-btn" id="btn-locate" title="Minha localização">📍</button>
+          <button class="map-btn" id="btn-search-places" title="Buscar empresas e locais">🔍</button>
+        </div>
+
+        <!-- Painel de busca de estabelecimentos -->
+        <div id="search-panel" class="search-panel hidden">
+          <div class="search-panel-head">
+            <input type="text" id="input-search-place" class="input-lg"
+              placeholder="Buscar empresa, posto, farmácia..."
+              autocomplete="off" spellcheck="false" />
+            <button id="btn-close-search" class="btn-close-search">✕</button>
+          </div>
+          <div class="search-shortcuts">
+            <button class="chip" data-q="empresa">Empresa</button>
+            <button class="chip" data-q="posto de gasolina">Posto</button>
+            <button class="chip" data-q="farmácia">Farmácia</button>
+            <button class="chip" data-q="restaurante">Restaurante</button>
+            <button class="chip" data-q="hospital">Hospital</button>
+            <button class="chip" data-q="banco">Banco</button>
+          </div>
+          <div class="search-results" id="search-results"></div>
         </div>
 
         <!-- HUD de navegação -->
@@ -202,6 +256,7 @@
   </div>
 
   <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
   <script src="vehicles.js"></script>
   <script src="logistics.js"></script>
   <script src="app.js"></script>
